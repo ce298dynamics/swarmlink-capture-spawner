@@ -119,6 +119,20 @@ the drones wait on the render thread concurrently. The practical ceiling is
 therefore **~2.9 rounds/s regardless of drone count**, which is why `CAPTURE_HZ`
 defaults to 2.0. Requesting a higher rate only increments the `dropped` counter.
 
+**Treat 335 ms as a worst case, not a constant.** The same calls re-measured
+against a lighter scene ran considerably faster, with no dropped frames and no
+errors in any run:
+
+| configuration | mean grab | dropped | errors |
+| --- | --- | --- | --- |
+| 2 drones, `front_center` (256x144) | 183 ms | 0 | 0 |
+| 2 drones, `fpv_cam` (320x240) | 82 ms | 0 | 0 |
+| 4 drones, `front_center` (256x144) | 93 ms | 0 | 0 |
+
+Note that 4 drones cost no more than 2, which is the overlap described above
+holding up. Size `CAPTURE_HZ` against the worst case, then let the `dropped`
+counter in the wrap-up line tell you what your sim is actually doing.
+
 **Capture does not interfere with the flight loop.** With all four capture
 threads running continuously, a separate client polling `getMultirotorState` and
 `simGetVehiclePose` measured median 1.00 ms / p90 1.01 / max 1.08, against a

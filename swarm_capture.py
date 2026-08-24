@@ -41,6 +41,14 @@ wait on the render thread concurrently.  That makes the practical ceiling
 defaults to 2.0.  Requesting a higher rate only increments the dropped
 counter.
 
+Treat 335 ms as a WORST CASE rather than a constant.  Re-measured the same
+day against a lighter scene: 183 ms (2 drones, front_center), 82 ms (2
+drones, fpv_cam) and 93 ms (4 drones, front_center), every run with 0
+dropped and 0 errors — so actual headroom is often several times better,
+and 4 drones cost no more than 2 (which is the overlap above, holding).
+Size CAPTURE_HZ against the worst case and let the dropped counter in the
+wrap-up line tell you what the sim is really doing.
+
 The 335 ms wait also does NOT leak into the flight loop.  Measured with all
 four capture threads running flat out against a separate client polling
 getMultirotorState + simGetVehiclePose the way run() does:
@@ -83,20 +91,25 @@ import time
 # ---- knobs -----------------------------------------------------------------
 # Capture ROUNDS per second (one round = one frame from every drone, all
 # grabbed concurrently).  The measured per-call render-sync floor is ~335 ms,
-# so ~2.9 Hz is the hard ceiling no matter how many drones there are; 2.0 Hz
-# leaves headroom for a loaded sim.  Raise it with --capture-hz and watch the
-# dropped counter in the wrap-up line.
+# so ~2.9 Hz is the conservative ceiling no matter how many drones there are;
+# 2.0 Hz leaves headroom for a loaded sim.  A lighter scene has measured 3-4x
+# faster than that floor, so raising this with --capture-hz is often fine —
+# watch the dropped counter in the wrap-up line to find out.
 CAPTURE_HZ = 2.0
 
 # The DEFAULT camera is a built-in one on purpose.  Cameras in AirSim are
-# declared PER VEHICLE, and this machine's settings.json gives the custom
-# "fpv_cam" (320x240, FOV 90) to drone_1 ONLY — drone_2/3/4 have no Cameras
-# block at all, and ensure_vehicles() can even simAddVehicle drones at runtime
-# that were never in settings.json.  "front_center" is one of the five cameras
+# declared PER VEHICLE, so a custom name resolves ONLY on the vehicles whose
+# settings.json actually declares it, and the set of vehicles is not even
+# fixed: ensure_vehicles() can simAddVehicle drones at runtime that were
+# never in settings.json at all.  "front_center" is one of the five cameras
 # every multirotor receives automatically, so it resolves on all of them (at
-# AirSim's default 256x144).  Since resolution costs nothing at grab time,
-# declaring a camera on every vehicle in settings.json is the least
-# expensive way to obtain a higher-resolution image.
+# AirSim's default 256x144), which makes it the only safe default.
+#
+# Since resolution costs nothing at grab time, declaring a camera on every
+# vehicle in settings.json is the least expensive way to obtain a
+# higher-resolution image — then select it with --capture-camera.  The probe
+# in _run_one reports per vehicle, so a name that resolves on only some of
+# them records those and drops the rest rather than failing the run.
 CAPTURE_CAMERA = "front_center"
 
 # The five built-in multirotor cameras, with their legacy numeric ids.  Printed
