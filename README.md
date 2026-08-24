@@ -18,20 +18,25 @@ Start AirSim, then run the following with the drones stationary. Nothing flies
 and no API control is taken:
 
 ```bash
-py swarm_capture.py --drones 4 --frames 5
+py swarm_capture.py --drones 2 --frames 5
 ```
 
 ```
-FPV smoke test: 5 rounds at 2.0 Hz, camera 'front_center', vehicles ['drone_1', ...]
-  -> .../results/frames/smoke_20260823_212715
-  FPV capture: 20 frames (5/drone), 0 slots dropped, 0 errors, 212 ms mean grab
-  OK   drone_1: 5 png (first 43897 bytes)
-  OK   drone_2: 5 png (first 44112 bytes)
+FPV smoke test: 5 rounds at 2.0 Hz, camera 'front_center', vehicles ['drone_1', 'drone_2']
+  -> .../results/frames/smoke_20260823_223738
+  FPV capture: 15 frames (7/drone), 0 slots dropped, 0 errors, 183 ms mean grab
+  OK   drone_1: 8 png (first 43383 bytes)
+  OK   drone_2: 7 png (first 43463 bytes)
 ```
 
 Run this smoke test before anything else: it confirms your camera name resolves
 on every vehicle before you commit a real flight to it. Flags: `--drones`,
 `--frames`, `--hz`, `--camera`, `--out`.
+
+`--frames` is approximate. The smoke test captures for a fixed duration with a
+little slack, so asking for 5 rounds at 2 Hz yields 7-8 frames per drone rather
+than exactly 5, and the two drones can differ by one at the tail. What matters
+in the output above is `0 slots dropped, 0 errors` and an `OK` line per vehicle.
 
 ## Output layout
 

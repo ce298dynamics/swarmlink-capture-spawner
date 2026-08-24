@@ -459,8 +459,10 @@ def _smoke(argv=None):
     ap.add_argument("--drones", type=int, default=4,
                     help="capture drone_1 .. drone_N (default 4)")
     ap.add_argument("--frames", type=int, default=5,
-                    help="number of capture ROUNDS (each round = one frame "
-                         "from every drone)")
+                    help="approximate number of capture ROUNDS (each round "
+                         "= one frame from every drone).  Capture runs for a "
+                         "fixed duration with a little slack, so a few extra "
+                         "frames per drone is normal")
     ap.add_argument("--hz", type=float, default=CAPTURE_HZ,
                     help=f"capture rounds per second (default {CAPTURE_HZ}; "
                          f"the render-sync ceiling is ~2.9)")
