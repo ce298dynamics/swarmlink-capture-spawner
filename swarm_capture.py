@@ -17,8 +17,9 @@ across: msgpack-rpc-python derives its tornado IOLoop from IOLoop.current(),
 which is THREAD-LOCAL, so a client constructed on the main thread and then
 driven from another would be running a foreign thread's event loop.
 
-The per-drone fan-out is not premature optimization — it is forced by measured
-numbers on this machine (2026-08-23, 4 parked drones, 256x144 Scene):
+The per-drone fan-out follows from measurement rather than from anticipated
+need.  The numbers below are from this machine (2026-08-23, 4 parked
+drones, 256x144 Scene):
 
     one simGetImages call, 1 image ................  335 ms
     one simGetImages call, 4 images (same vehicle).  334 ms   <- SAME
@@ -37,7 +38,8 @@ pays that latency once per drone:
 Nearly perfect overlap — the stall is latency, not throughput, so the drones
 wait on the render thread concurrently.  That makes the practical ceiling
 ~1/0.34 = 2.9 rounds/s REGARDLESS of drone count, which is why CAPTURE_HZ
-defaults to a comfortable 2.0.  Asking for more just fills the dropped counter.
+defaults to 2.0.  Requesting a higher rate only increments the dropped
+counter.
 
 The 335 ms wait also does NOT leak into the flight loop.  Measured with all
 four capture threads running flat out against a separate client polling
@@ -47,8 +49,8 @@ getMultirotorState + simGetVehiclePose the way run() does:
     capture flat-out x4 ....... median 1.00 ms, p90 1.01, max 1.08
 
 i.e. no measurable effect.  The flight loop runs at CONTROL_DT = 0.05 s
-(20 Hz); a 335 ms blocking call inside it would eat seven whole passes, which
-is exactly why capture lives out here instead.
+(20 Hz); a 335 ms blocking call inside it would consume seven whole passes,
+which is why capture runs on its own threads instead.
 
 OUTPUT LAYOUT
 -------------
@@ -91,9 +93,10 @@ CAPTURE_HZ = 2.0
 # "fpv_cam" (320x240, FOV 90) to drone_1 ONLY — drone_2/3/4 have no Cameras
 # block at all, and ensure_vehicles() can even simAddVehicle drones at runtime
 # that were never in settings.json.  "front_center" is one of the five cameras
-# every multirotor gets for free, so it resolves on all of them (at AirSim's
-# default 256x144).  Since resolution costs nothing in grab time, declaring a
-# camera on every vehicle in settings.json is the way to a bigger picture.
+# every multirotor receives automatically, so it resolves on all of them (at
+# AirSim's default 256x144).  Since resolution costs nothing at grab time,
+# declaring a camera on every vehicle in settings.json is the least
+# expensive way to obtain a higher-resolution image.
 CAPTURE_CAMERA = "front_center"
 
 # The five built-in multirotor cameras, with their legacy numeric ids.  Printed
@@ -136,11 +139,11 @@ class FPVRecorder:
         self.hz = float(hz)
         self.period = 1.0 / self.hz if self.hz > 0 else 1.0
         self.camera = str(camera)
-        # Optional main-thread state peek: state_fn(drone_id) -> (mode, cx, cy).
-        # Called from the capture threads without a lock ON PURPOSE — a Python
-        # attribute read is atomic under the GIL, and a value that is one 50 ms
-        # flight pass stale costs a manifest annotation nothing.  It must never
-        # mutate anything.
+        # Optional main-thread state accessor: state_fn(drone_id) -> (mode, cx,
+        # cy).  Called from the capture threads without a lock deliberately — a
+        # Python attribute read is atomic under the GIL, and a value that is one
+        # 50 ms flight pass stale is entirely adequate as a manifest annotation.
+        # It must never mutate anything.
         self.state_fn = state_fn
         self.quiet = quiet
 
@@ -171,15 +174,16 @@ class FPVRecorder:
         whole run.
 
         Returns True if at least one drone is capturing.  The threads are
-        daemons so a wedged image RPC can never hold the process open — but the
+        daemons so a stalled image RPC can never hold the process open — but the
         caller must still stop() them, because MAZE_SWARM_AIRSIM_RT's __main__
-        ends with os._exit(0), which kills daemons instantly with no flush."""
+        ends with os._exit(0), which terminates daemon threads immediately
+        with no flush."""
         if self._threads:
             return self.enabled
 
-        # Import once here rather than racing four threads through it.  Failing
-        # in the caller's thread also gives a clean error on a machine with no
-        # airsim installed.
+        # Import once here rather than having four threads import concurrently.
+        # Failing in the caller's thread also gives a clean error on a machine
+        # with no airsim installed.
         try:
             import airsim
         except Exception as exc:                     # noqa: BLE001
@@ -245,8 +249,8 @@ class FPVRecorder:
 
     def stop(self, timeout=5.0):
         """Signal the threads, join them, and make sure the manifest is on disk.
-        Safe to call twice (run()'s wrap-up and shutdown()'s belt-and-braces
-        both call it)."""
+        Safe to call twice (run()'s wrap-up and shutdown()'s redundant safety
+        call both invoke it)."""
         if not self._threads:
             return
         self._stop.set()
@@ -286,8 +290,8 @@ class FPVRecorder:
                 f"{drop} slots dropped, {err} errors, "
                 f"{ms:.0f} ms mean grab -> {self.out_dir}")
         if drop > cap * 0.25:
-            # ~335 ms per grab is the render-sync floor; asking for more rounds
-            # per second than that just fills this counter.
+            # ~335 ms per grab is the render-sync floor; requesting more rounds
+            # per second than that only increments this counter.
             line += (f"\n    (heavy dropping at {self.hz:g} Hz — the measured "
                      f"ceiling is ~{1.0 / 0.34:.1f} Hz; lower --capture-hz)")
         return line
@@ -305,9 +309,10 @@ class FPVRecorder:
             self._probe_done[did].set()
             return
 
-        # Camera probe: cheaper than an image and gives a clean per-vehicle
-        # verdict.  A vehicle whose camera does not resolve is dropped rather
-        # than failing the whole recorder — 3 of 4 drones beats none.
+        # Camera probe: cheaper than an image and gives a clear per-vehicle
+        # result.  A vehicle whose camera does not resolve is dropped rather
+        # than failing the whole recorder, so a partial configuration still
+        # produces usable data.
         try:
             client.simGetCameraInfo(self.camera, vehicle_name=name)
             self._probe_ok[did] = True
@@ -324,12 +329,12 @@ class FPVRecorder:
 
         # One request object, reused for every grab.  All four ImageRequest
         # arguments are passed EXPLICITLY because the class attribute default is
-        # compress=False while the constructor default is compress=True — a trap
-        # worth not stepping in.  compress=True means AirSim hands back finished
-        # PNG bytes, so writing a frame is a raw file write: no opencv (not in
-        # requirements.txt) and no numpy reshape (airsim's own
-        # string_to_uint8_array still calls np.fromstring, gone in numpy >= 1.23).
-        # It also measured identical to compress=False, so the PNG is free.
+        # compress=False while the constructor default is compress=True, which
+        # is an easy discrepancy to overlook.  compress=True means AirSim
+        # returns finished PNG bytes, so writing a frame is a raw file write:
+        # no opencv, and no numpy reshape (airsim's own string_to_uint8_array
+        # still calls np.fromstring, removed in numpy >= 1.23).  It also
+        # measured identical to compress=False, so the PNG costs nothing.
         request = [airsim.ImageRequest(self.camera, airsim.ImageType.Scene,
                                        False, True)]
 
@@ -338,17 +343,17 @@ class FPVRecorder:
             target = self._slot_t0 + k * self.period
             now = time.time()
             if now < target:
-                # Wake early if stop() fires; 50 ms slices keep shutdown snappy
-                # without busy-waiting.
+                # Wake early if stop() fires; 50 ms slices keep shutdown
+                # responsive without busy-waiting.
                 self._stop.wait(min(target - now, 0.05))
                 continue
             if now > target + self.period:
                 # Fell behind (the grab itself is ~335 ms, so this is normal at
                 # any hz near the ceiling).  SKIP the missed slots outright and
-                # jump to the current one — never try to catch up, which would
-                # fire a burst of image RPCs exactly when the sim is already
-                # struggling, and would desynchronize this drone's frame indices
-                # from the rest of the swarm.
+                # advance to the current one — never attempt to catch up, which
+                # would issue a burst of image RPCs precisely when the sim is
+                # already under load, and would desynchronize this drone's frame
+                # indices from the rest of the swarm.
                 missed = int((now - target) / self.period)
                 with self._lock:
                     self.dropped += missed
@@ -393,9 +398,10 @@ class FPVRecorder:
                 print(f"  FPV capture: cannot write {fname} ({exc})")
             return
 
-        # Pose comes back INSIDE the image response — logging it costs no extra
-        # RPC, and it is the camera's own pose at render time, which is a truer
-        # label for the pixels than a separately-polled body pose.
+        # Pose is returned INSIDE the image response — logging it costs no
+        # extra RPC, and it is the camera's own pose at render time, which
+        # describes the pixels more accurately than a separately-polled body
+        # pose.
         p, q = r.camera_position, r.camera_orientation
         mode = cx = cy = ""
         if self.state_fn is not None:
@@ -428,14 +434,15 @@ class FPVRecorder:
 # ============================================================================
 # ===[ STANDALONE SMOKE TEST ]===
 # ============================================================================
-# Validates the camera plumbing against a running sim WITHOUT flying anything:
+# Validates the camera configuration against a running sim WITHOUT flying:
 #     py swarm_capture.py --drones 4 --frames 5
 # Use it to confirm a camera name resolves on every vehicle before committing
 # a flight to it.
 def _smoke(argv=None):
     ap = argparse.ArgumentParser(
         description="Grab a few FPV frames from parked AirSim drones to check "
-                    "the camera plumbing (no flying, no API control taken).")
+                    "the camera configuration (nothing flies and no API "
+                    "control is taken).")
     ap.add_argument("--drones", type=int, default=4,
                     help="capture drone_1 .. drone_N (default 4)")
     ap.add_argument("--frames", type=int, default=5,
