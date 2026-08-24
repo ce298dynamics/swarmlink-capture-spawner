@@ -8,6 +8,22 @@ Single file, no package to install, stdlib-only at import time. Extracted from a
 larger swarm drone-racing project, which is what the `MAZE_SWARM_AIRSIM_RT.py`
 and `ASTAR_DRONE` references in the source comments refer to.
 
+## Requirements
+
+- **Python 3**, then `pip install -r requirements.txt`.
+- **AirSim already running**, with the vehicles spawned. The recorder connects
+  over the usual RPC port (41451) and never launches the simulator itself.
+- **Vehicles named `drone_1`, `drone_2`, … `drone_N`** — but only for the
+  standalone smoke test, which builds those names from `--drones N`. The
+  `FPVRecorder` class itself takes whatever names you give it, so if your
+  `settings.json` uses different ones, pass your own mapping (see
+  [Using it in your own flight loop](#using-it-in-your-own-flight-loop)).
+
+If the smoke test reports `camera 'front_center' resolved on none of [...]`,
+**check the vehicle names before the camera name.** That message is printed
+whenever the per-vehicle probe fails, and a vehicle the recorder cannot reach
+is a far more common cause than a genuinely missing camera.
+
 ## Quickstart
 
 ```bash
@@ -42,9 +58,10 @@ in the output above is `0 slots dropped, 0 errors` and an `OK` line per vehicle.
 
 ```
 <out_dir>/
-    drone_1/000000_t0.000.png
-            000001_t0.500.png
-    drone_2/000000_t0.001.png
+    drone_1/000000_t0.548.png
+            000001_t1.053.png
+    drone_2/000000_t0.548.png
+            000001_t1.053.png
     manifest.csv
 ```
 
@@ -98,8 +115,11 @@ print(rec.summary_line())
 
 ## Why a thread and a client per drone
 
-This design follows from measurement rather than from anticipated need. On one
-machine, 4 stationary drones, 256x144 Scene:
+This design follows from measurement rather than from anticipated need.
+
+**A `simGetImages` call costs render-sync latency far above an ordinary RPC,
+and that cost is per call — not per image, and not per pixel.** Measured on 4
+stationary drones, 256x144 Scene:
 
 | | |
 | --- | --- |
@@ -109,10 +129,9 @@ machine, 4 stationary drones, 256x144 Scene:
 | 256x144 vs 320x240 | no difference, so **resolution is free** |
 | plain `getMultirotorState` / `simGetVehiclePose` | 2 ms |
 
-The ~335 ms is therefore a fixed per-**call** render-sync latency: not PNG
-encoding, not resolution, not bytes on the wire. `vehicle_name` is a per-call
-argument, so there is no batch form across vehicles and a serial loop pays that
-latency once per drone:
+So the cost is neither PNG encoding, nor resolution, nor bytes on the wire.
+`vehicle_name` is a per-call argument, so there is no batch form across
+vehicles and a serial loop pays that latency once per drone:
 
 | | |
 | --- | --- |
@@ -120,30 +139,34 @@ latency once per drone:
 | parallel, 4 clients on 4 threads | **342 ms/round** |
 
 The overlap is nearly perfect, because the cost is **latency, not throughput**:
-the drones wait on the render thread concurrently. The practical ceiling is
-therefore **~2.9 rounds/s regardless of drone count**, which is why `CAPTURE_HZ`
-defaults to 2.0. Requesting a higher rate only increments the `dropped` counter.
+the drones wait on the render thread concurrently. That makes the ceiling
+**flat in drone count** — roughly one round per grab, however many drones you
+record.
 
-**Treat 335 ms as a worst case, not a constant.** The same calls re-measured
-against a lighter scene ran considerably faster, with no dropped frames and no
-errors in any run:
+**The absolute number is scene-dependent; the structure is not.** Re-measured
+later against a lighter scene:
 
 | configuration | mean grab | dropped | errors |
 | --- | --- | --- | --- |
 | 2 drones, `front_center` (256x144) | 183 ms | 0 | 0 |
 | 2 drones, `fpv_cam` (320x240) | 82 ms | 0 | 0 |
 | 4 drones, `front_center` (256x144) | 93 ms | 0 | 0 |
+| full 88 s flight, 2 drones | 87 ms | 0 | 0 |
 
-Note that 4 drones cost no more than 2, which is the overlap described above
-holding up. Size `CAPTURE_HZ` against the worst case, then let the `dropped`
-counter in the wrap-up line tell you what your sim is actually doing.
+Grab time varied by 3-4x with scene load, but **4 drones still cost no more
+than 2** — the overlap holds, which is the part the design depends on. So
+treat 335 ms as the worst case to size against: at that floor the ceiling is
+~2.9 rounds/s, which is why `CAPTURE_HZ` defaults to 2.0, and a lighter scene
+simply hands you headroom. The `dropped` counter in the wrap-up line is the
+ground truth for your sim — raise `--capture-hz` until it starts climbing.
 
 **Capture does not interfere with the flight loop.** With all four capture
 threads running continuously, a separate client polling `getMultirotorState` and
 `simGetVehiclePose` measured median 1.00 ms / p90 1.01 / max 1.08, against a
 no-capture baseline of median 1.00 / p90 1.01 / max 3.01. A 20 Hz control loop
-has a 50 ms budget, and a 335 ms blocking call inside it would consume seven
-whole passes. That is the reason capture runs on its own threads.
+has a 50 ms budget, so a grab of even 87 ms would consume whole passes, and one
+at the 335 ms worst case would eat seven. That is why capture runs on its own
+threads rather than inside the loop.
 
 ## Two constraints worth knowing
 

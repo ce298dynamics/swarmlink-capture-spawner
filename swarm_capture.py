@@ -486,7 +486,7 @@ def _smoke(argv=None):
 
     rec = FPVRecorder(names, out, hz=args.hz, camera=args.camera)
     if not rec.start():
-        print("FAILED — capture never came up.")
+        print("FAILED - capture never came up.")
         return 1
     time.sleep(args.frames / max(args.hz, 0.001) + 1.0)
     rec.stop()
