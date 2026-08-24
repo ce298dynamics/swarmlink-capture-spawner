@@ -1,0 +1,7 @@
+# Captured frames + manifests (large, regenerable, one run's worth)
+results/
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo

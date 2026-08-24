@@ -1,0 +1,16 @@
+# The only direct dependency.  swarm_capture.py imports it lazily inside
+# FPVRecorder.start(), so the module still imports (and --help still works)
+# on a machine with no simulator stack at all.
+#
+# `pip install airsim` also pulls numpy and opencv-contrib-python.  This module
+# needs NEITHER at runtime: simGetImages is called with compress=True, so AirSim
+# hands back finished PNG bytes that go to disk via airsim.write_file as a raw
+# write.  Notably that means it is unaffected by airsim's own
+# string_to_uint8_array(), which still calls np.fromstring and is therefore
+# broken on numpy >= 1.23.  Tested here against numpy 2.2.6.
+airsim>=1.8.1
+
+# Pulled in by airsim, pinned here only as a warning: msgpack-rpc-python needs
+# this exact (old) tornado.  A newer tornado in the same environment breaks the
+# RPC client, which shows up as a hang on connect rather than an ImportError.
+tornado==4.5.3
