@@ -305,8 +305,17 @@ def _main(argv=None):
         return 0
 
     import airsim
+    # Fail with a sentence, not a msgpackrpc traceback.  "Retry connection over
+    # the limit" is what the RPC layer raises when nothing is listening, and it
+    # tells a first-time user nothing about what to do.
     client = airsim.MultirotorClient()
-    client.confirmConnection()
+    try:
+        client.confirmConnection()
+    except Exception as exc:                          # noqa: BLE001
+        print("  no simulator on 127.0.0.1:41451 (%s)" % type(exc).__name__)
+        print("  -> start the sim first, and press Play if you are running")
+        print("     from the Unreal Editor (the RPC server only runs in PIE).")
+        return 2
 
     if args.clear:
         clear(client)
