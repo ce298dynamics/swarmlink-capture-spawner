@@ -1,12 +1,34 @@
-# swarm-fpv-capture
+# swarmlink-capture-spawner
+
+Two tools for making an AirSim swarm simulation produce useful **vision data**.
+They are independent — use either alone — but they solve two halves of one
+problem: photographs of an empty grey maze teach a model nothing, and objects
+nobody photographs are equally useless.
+
+| | tool | needs |
+| --- | --- | --- |
+| **1. Recording** | [`swarm_capture.py`](#1-recording-the-flight) | Python + AirSim. Nothing else. |
+| **2. Populating** | [`maze_props.py`](#2-populating-the-world) and the `ue_*.py` scripts | Unreal Editor 4.27, two plugins, and an editable project. |
+
+**The prerequisites differ sharply**, which is why they are documented
+separately. Part 1 is `pip install` and go. Part 2 needs an Unreal project you
+can import assets into — a packaged AirSim binary cannot do it at all, because
+its content is sealed in `.pak` files and `simSpawnObject` can only resolve names
+already cooked into them.
+
+Both were extracted from a larger swarm drone-racing project, which is what the
+`MAZE_SWARM_AIRSIM_RT.py` and `ASTAR_DRONE` references in the source comments
+refer to. Neither tool imports anything from it.
+
+---
+
+# 1. Recording the flight
 
 Records the **first-person view of every drone in an AirSim swarm to disk while
 the flight is happening**, one PNG per drone per capture round, without slowing
 the flight-control loop down.
 
-Single file, no package to install, stdlib-only at import time. Extracted from a
-larger swarm drone-racing project, which is what the `MAZE_SWARM_AIRSIM_RT.py`
-and `ASTAR_DRONE` references in the source comments refer to.
+Single file, no package to install, stdlib-only at import time.
 
 ## Requirements
 
@@ -196,3 +218,132 @@ tilt past 10°, and some point at open sky during hard braking. This is expected
 behaviour for a body-fixed camera rather than a defect. A stabilized view would
 require `simSetCameraPose` counter-rotation on each grab, which is not
 implemented here.
+
+---
+
+# 2. Populating the world
+
+Places real objects — furniture, and a photoreal scanned **person** — into a
+maze so the capture above has something worth photographing.
+
+## Requirements
+
+Unlike part 1, this needs an **Unreal project you can import into**:
+
+- **Unreal Editor 4.27** with your AirSim environment as an editable project.
+  A *packaged* AirSim binary cannot do this at all: its content is sealed in
+  `.pak` files, and older builds do not even implement `simListAssets`.
+- **Two editor plugins enabled** in your `.uproject`:
+  `PythonScriptPlugin` and `EditorScriptingUtilities`.
+- Python + `airsim`, as in part 1.
+
+Check you are on a capable simulator before anything else:
+
+```bash
+py probe_env.py
+```
+
+If `simListAssets` answers, you are fine. If it fails as an unknown method, you
+are on an old packaged binary and no imported asset can ever be spawned into it.
+
+## The one rule: props go in FREE cells, never in wall cells
+
+It is tempting to swap a table in for a wall block. Don't. Measured against the
+maze this came from:
+
+| | footprint | height |
+| --- | --- | --- |
+| one wall block | 8.0 × 8.0 m | **5.1 m** |
+| drone flight layers | — | 1.8 – 3.3 m |
+| a table | 1.12 m | **0.75 m** |
+
+A table is ~7× too short, so every drone flies straight over it. Worse, the
+planner never notices: obstacle avoidance reads a **0/1 occupancy grid**, not the
+spawned actors. A table in a wall cell leaves that cell logically solid — drones
+route around geometry that is not there, while collision reporting stays silent
+when they clip the space a wall used to fill.
+
+So `maze_props.py` places only into cells the grid already marks free, and
+**never modifies the grid**. Flight behaviour is unchanged by construction. Check
+that: run the same seed with and without props, and coverage time and per-drone
+collision counts must be identical.
+
+## Getting a person in
+
+`ue_import_person.py` imports an FBX as a spawnable static mesh, imports the
+textures beside it, builds a material and assigns it.
+
+```bash
+set AIRSIM_PROP_FBX=C:\path\to\model.fbx
+UE4Editor-Cmd.exe YourProject.uproject -run=pythonscript -script="ue_import_person.py"
+```
+
+Run it with the **editor closed** — Unreal locks the project. Then restart the
+editor, press Play, and confirm the name:
+
+```bash
+py probe_env.py --grep <asset name>
+```
+
+[RenderPeople's free models](https://renderpeople.com/free-3d-people/) work well
+(FBX, free commercial use, no registration). **Get your own download** — this
+repo ships the scripts, not the model.
+
+### Why a posed scan rather than a rigged character
+
+- **AirSim cannot spawn a SkeletalMesh at all.** The registry admits only static
+  meshes and blueprints, so a rigged character never even appears in
+  `simListAssets()`. A posed scan has no rig, so it spawns directly.
+- **A rigged character carries its animation set's posture.** Unreal's stock
+  mannequin animates on a rifle-carry rig, so *every* pose holds the arms up at
+  chest height. A scan is simply the pose the person was photographed in.
+
+`ue_make_human_bp.py` builds posed blueprints from a rigged character if you do
+need that route — but expect the posture problem.
+
+## Placing them
+
+```bash
+py maze_props.py --list     # catalogue with measured sizes
+py maze_props.py --demo     # spawn a row of props to look at
+py maze_props.py --clear    # remove everything it placed
+```
+
+`free_cell_positions(grid, grid_to_world, …)` takes your occupancy grid and
+world-mapper **as arguments**, so the module never imports your flight code. To
+wire it into a real run, call it after your maze is built and pass your drone
+start cell as `skip` — otherwise a drone can spawn inside a couch.
+
+The catalogue's `person` entry names a specific RenderPeople asset. `available()`
+filters to whatever is actually in your registry, so a missing entry is skipped
+rather than fatal — add your own model as a new entry with its measured size.
+
+## Three ways this breaks, all guarded against
+
+- **An unknown asset name crashes the simulator.** The spawn call looks a name up
+  and dereferences the result before null-checking it — a typo is not a Python
+  exception, it takes the sim down. Every asset is validated against
+  `simListAssets()` first.
+- **Reusing a just-destroyed object name is fatal.** Destruction is deferred;
+  Unreal holds the name reserved until garbage collection, and spawning into a
+  reserved name is a fatal engine error. Every spawned object gets a run-unique
+  name.
+- **Props share space with drones.** Anything taller than the lowest flight layer
+  gets hit — and logged as a *wall* strike, quietly invalidating the very A/B
+  test that proves props are inert. Props are auto-scaled to clear it.
+
+## Measuring a new prop
+
+There is no bounding-box call in this API, so `probe_env.py` sizes objects
+optically: spawn at a known distance, measure the silhouette. Two details matter.
+
+**Use segmentation frames, not scene frames.** Animated skies make two *idle*
+scene frames differ by hundreds of pixels; segmentation frames are flat-shaded
+IDs and measured **0 px** of drift.
+
+**The silhouette is set by the near face**, half the object's width closer than
+its centre. Measuring to the centre inflates the result by ~9%.
+
+Also check the **pivot**: scan pivots are frequently not at the feet, so a prop
+can hover. The catalogue carries a per-prop `z` offset, and it scales with the
+prop — shrink the mesh and the pivot-to-feet gap shrinks with it.
