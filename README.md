@@ -7,12 +7,6 @@ Two tools for an AirSim swarm simulation.
 | [`swarm_capture.py`](#swarm_capturepy--fpv-recording) | records each drone's first-person view to PNGs during a flight | Python + AirSim |
 | [`maze_props.py`](#maze_propspy--placing-objects) + the `ue_*.py` scripts | spawns furniture and people into the world | Unreal Editor 4.27, editable project |
 
-They are independent — use either on its own.
-
-Both come from a larger swarm drone-racing project; that is what the
-`MAZE_SWARM_AIRSIM_RT.py` and `ASTAR_DRONE` mentions in the source comments refer
-to. Neither imports anything from it.
-
 ---
 
 # `swarm_capture.py` — FPV recording
@@ -169,9 +163,10 @@ median 2.8°, p90 10.1°, worst −24.9° / +31.7°; about 10% of frames tilt pa
 10°. A stabilised view would need `simSetCameraPose` counter-rotation per grab,
 which is not implemented.
 
-**If the smoke test says `camera 'front_center' resolved on none of [...]`**,
-check the vehicle names before the camera name. That message appears whenever
-the per-vehicle probe fails, and an unreachable vehicle is the more common cause.
+**If the smoke test reports `camera 'front_center' resolved on none of [...]`**,
+it is worth checking the vehicle names before the camera name. That message
+appears whenever the per-vehicle probe fails, and an unreachable vehicle tends to
+be the more common cause.
 
 ---
 
@@ -184,9 +179,9 @@ marks as free.
 
 This half needs an Unreal project you can import assets into:
 
-- Unreal Editor 4.27 with your AirSim environment as an editable project. A
-  packaged AirSim binary will not work — its content is sealed in `.pak` files,
-  and older builds do not implement `simListAssets` at all.
+- Unreal Editor 4.27, with your AirSim environment as an editable project.
+  A packaged AirSim binary is not suitable here: its content is sealed inside
+  `.pak` files, and older builds do not implement `simListAssets`.
 - Two editor plugins enabled in your `.uproject`: `PythonScriptPlugin` and
   `EditorScriptingUtilities`.
 - Python + `airsim`, as above.
@@ -197,8 +192,9 @@ Check your simulator first:
 py probe_env.py
 ```
 
-If `simListAssets` answers, you are set. If it fails as an unknown method, you
-are on an old packaged binary and cannot spawn imported assets into it.
+If `simListAssets` returns a list, you are good to go. If it comes back as an
+unknown method, the simulator is an older packaged build, which cannot spawn
+imported assets.
 
 ## Usage
 
@@ -258,16 +254,17 @@ set AIRSIM_PROP_FBX=C:\path\to\model.fbx
 UE4Editor-Cmd.exe YourProject.uproject -run=pythonscript -script="ue_import_person.py"
 ```
 
-Run it with the editor closed — Unreal locks the project. Then restart the
-editor, press Play, and check the name:
+It needs the editor closed, since Unreal holds a lock on the project while it is
+open. Afterwards, reopen the editor, press Play, and check the name:
 
 ```bash
 py probe_env.py --grep <asset name>
 ```
 
 [RenderPeople's free models](https://renderpeople.com/free-3d-people/) work well
-(FBX, free commercial use, no registration). Get your own download — this repo
-has the scripts, not the model.
+here — FBX, free for commercial use, and no registration needed. The repository
+includes the import scripts rather than any model files, since those licences are
+tied to the individual download, so you will want to grab one yourself.
 
 A posed scan is easier to use than a rigged character, for two reasons:
 
